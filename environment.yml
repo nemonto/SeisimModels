@@ -1,0 +1,22 @@
+# conda env for the pretrained GMP models.
+#   cd H:\SeisimModels
+#   conda env create -f environment.yml
+#   conda activate seisim-models
+#
+# The `pip: -e .` line installs this project itself, so `import gmp` works
+# from any directory while the checkpoints stay where they are.
+name: seisim-models
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pytorch>=2.4        # CPU build; swap for pytorch-gpu if you want CUDA
+  - numpy>=2.0
+  - scipy>=1.13
+  - control>=0.10.2     # seisim example only
+  - matplotlib>=3.8     # seisim example only
+  - pandas              # querying checkpoints/model_index.csv
+  - ipykernel           # so the seisim notebooks can select this env
+  - pip
+  - pip:
+      - -e .

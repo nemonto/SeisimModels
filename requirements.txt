@@ -1,0 +1,12 @@
+# Plain-pip route. Install torch first if you want a specific build:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# then:
+#   pip install -r requirements.txt && pip install -e .
+torch>=2.4
+numpy>=2.0
+scipy>=1.13
+# optional — seisim example
+control>=0.10.2
+matplotlib>=3.8
+# optional — model_index.csv queries
+pandas>=2.0

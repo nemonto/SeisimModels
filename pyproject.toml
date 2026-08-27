@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seisim-models"
+version = "1.0.0"
+description = "Pretrained ground-motion predictors (GMP_X5) with zero-config inference for seismic-isolation feedforward control"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",     # not inherited from anything here — see README (CPU vs CUDA)
+    "numpy>=2.0",
+    "scipy>=1.13",    # gmp.preprocess only
+]
+
+[project.optional-dependencies]
+seisim = ["control>=0.10.2", "matplotlib>=3.8"]   # examples/seisim_closed_loop.py
+index  = ["pandas>=2.0"]                          # querying checkpoints/model_index.csv
+
+[tool.setuptools]
+packages = ["gmp"]
+
+# The checkpoints are repo data, not package data: they are resolved relative
+# to the project root (gmp/paths.py), which is why an editable install is the
+# supported route. Override with SEISIM_MODELS_ROOT if you install otherwise.
