@@ -1,9 +1,14 @@
-"""Where the shipped checkpoints live, and how to name one.
+"""Where the shipped models live, and how to name one.
 
 The project root is derived once from this file's location, so nothing in the
 package (or in a notebook that imports it) ever needs an absolute path. Set
 `SEISIM_MODELS_ROOT` to override — needed only if the package was installed
 non-editable and the `checkpoints/` tree stayed behind.
+
+Layout (written by GMP_X8_CS `py_exp2/export_seisim_models.py`):
+    checkpoints/<family>/w<input_sec>x<output_sec>_s<seed>/unified_checkpoint.ckpt
+    checkpoints/classical/wiener_w<input_sec>.npz
+    checkpoints/model_index.csv
 """
 from __future__ import annotations
 
@@ -15,10 +20,10 @@ ROOT        = Path(os.environ.get("SEISIM_MODELS_ROOT",
 CHECKPOINTS = ROOT / "checkpoints"
 INDEX_CSV   = CHECKPOINTS / "model_index.csv"
 
-FAMILIES   = ("dlinear", "gru", "lstm", "moderntcn", "patch-tst")
-SUB_TYPES  = ("summer", "winter", "eql", "eqh", "all")
-TARGETS    = ("absolute", "delta")
-LEGACY_FAMILIES = ("cnn-lstm", "dlinear", "gru", "lstm", "patch-tst")
+FAMILIES      = ("dlinear", "gru", "lstm", "moderntcn", "patch-tst")
+HORIZONS      = (0.5, 1.0, 2.0, 4.0)      # forecast horizons, s
+SEEDS         = (0, 1, 2)
+WIENER_INPUTS = (5, 20)                   # Wiener input lengths, s
 
 _MISSING = (
     "{path} does not exist.\n"
@@ -30,7 +35,7 @@ _MISSING = (
 
 
 def resolve(rel: str | Path) -> Path:
-    """Absolute path for a project-relative POSIX path (an index `ckpt_path`)."""
+    """Absolute path for a project-relative POSIX path (an index `path`)."""
     p = Path(rel)
     p = p if p.is_absolute() else ROOT / p
     if not p.exists():
@@ -38,35 +43,28 @@ def resolve(rel: str | Path) -> Path:
     return p
 
 
-def _win(input_sec: float, output_sec: float) -> str:
-    return f"w{input_sec:g}x{output_sec:g}"
+def find(model_type: str, output_sec: float = 2.0, seed: int = 0,
+         input_sec: float = 20) -> Path:
+    """Path of one shipped model file.
 
-
-def find(model_type: str, sub_type: str = "all", output_sec: float = 0.5,
-         target: str = "absolute", input_sec: float = 5) -> Path:
-    """Path of one shipped checkpoint.
-
-    model_type : dlinear | gru | lstm | moderntcn | patch-tst | naive | cnn-lstm
-    sub_type   : the training condition — summer | winter | eql | eqh | all,
-                 or "legacy" for a GMP_X3 checkpoint ("-" / "naive" for the
-                 persistence baseline).
-    output_sec : 0.5 or 1 (forecast horizon in seconds)
-    target     : absolute | delta (training-side only; both return absolute)
-    input_sec  : 5 for every X5 checkpoint shipped here.
-
-    Legacy and persistence checkpoints ignore `output_sec`/`target`/`input_sec`
-    where they don't apply.
+    model_type : dlinear | gru | lstm | moderntcn | patch-tst  (a checkpoint
+                 for `GMP`), or wiener (a fit file for `Wiener`, every
+                 horizon in one file)
+    output_sec : 0.5 | 1 | 2 | 4 (forecast horizon, s; deep models)
+    seed       : 0 | 1 | 2 (training seed; deep models)
+    input_sec  : 5 | 20 (Wiener only; each deep family has one input length)
     """
     mt = model_type.lower()
-    st = str(sub_type).lower()
-    if st == "legacy":
-        return resolve(f"checkpoints/legacy/{mt}/unified_checkpoint.ckpt")
-    if mt == "naive" or st in {"-", "naive"}:
-        return resolve(f"checkpoints/naive/{_win(input_sec, output_sec)}"
-                       f"_absolute/unified_checkpoint.ckpt")
-    return resolve(f"checkpoints/{mt}/{st}/"
-                   f"{_win(input_sec, output_sec)}_{target}/"
-                   "unified_checkpoint.ckpt")
+    if mt == "wiener":
+        return resolve(f"checkpoints/classical/wiener_w{input_sec:g}.npz")
+    if mt not in FAMILIES:
+        raise ValueError(f"model_type must be one of {FAMILIES + ('wiener',)}; "
+                         f"got {model_type!r}")
+    hits = sorted((CHECKPOINTS / mt).glob(f"w*x{output_sec:g}_s{seed}/unified_checkpoint.ckpt"))
+    if len(hits) != 1:
+        raise FileNotFoundError(f"{len(hits)} {mt} checkpoints for {output_sec:g} s, "
+                                f"seed {seed} under {CHECKPOINTS / mt}")
+    return hits[0]
 
 
 def list_checkpoints(root: str | Path | None = None) -> list[Path]:

@@ -1,30 +1,29 @@
-"""Pretrained ground-motion predictors, ready for inference.
+"""Pretrained ground-motion predictors (GMP_X6/X8), ready for inference.
 
     from gmp import GMP, find, prepare
-    ckpt = find("gru", sub_type="all", output_sec=0.5, target="absolute")
-    model = GMP(ckpt)
-    forecast = model.predict_long(prepare(raw_512hz, ckpt))
+    ground, x = prepare(raw_512hz)              # seisim's ground, the model input
+    model = GMP(find("gru", output_sec=2))
+    forecast = model.predict_long(x)            # aligned to x[K:]
 
-`load_gmp(path)` is the safe entry point when the path may be one of the
-legacy GMP_X3 checkpoints under `checkpoints/legacy/`.
-
-`gmp.seisim_adapter` is deliberately not imported here — it needs `seisim` and
-`control` on the path.
+`Wiener` and `Persistence` are the paper's classical baselines with the same
+interface. `gmp.benchmark` has the benchmark's forecast stream and RMSP;
+`gmp.seisim_adapter` is deliberately not imported here — it needs `seisim`
+and `control` on the path.
 """
-from .predictor  import GMP
-from .legacy     import LegacyGMP, is_legacy_checkpoint, load_gmp
-from .paths      import (CHECKPOINTS, FAMILIES, INDEX_CSV, LEGACY_FAMILIES,
-                         ROOT, SUB_TYPES, TARGETS, find, list_checkpoints,
-                         resolve)
-from .preprocess import (bandpass, bandpass_decimate, decimate_to, prepare,
-                         recipe)
+from .predictor  import GMP, default_device
+from .classical  import Persistence, Wiener
+from .benchmark  import CONTROL_START_SEC, forecast_stream, rmsp
+from .paths      import (CHECKPOINTS, FAMILIES, HORIZONS, INDEX_CSV, ROOT,
+                         SEEDS, WIENER_INPUTS, find, list_checkpoints, resolve)
+from .preprocess import BAND, ground, prepare, recipe, zero_phase_band
 
 __all__ = [
-    "GMP", "LegacyGMP", "load_gmp", "is_legacy_checkpoint",
+    "GMP", "Wiener", "Persistence", "default_device",
     "find", "resolve", "list_checkpoints",
     "ROOT", "CHECKPOINTS", "INDEX_CSV",
-    "FAMILIES", "SUB_TYPES", "TARGETS", "LEGACY_FAMILIES",
-    "prepare", "recipe", "bandpass", "decimate_to", "bandpass_decimate",
+    "FAMILIES", "HORIZONS", "SEEDS", "WIENER_INPUTS",
+    "prepare", "ground", "zero_phase_band", "recipe", "BAND",
+    "forecast_stream", "rmsp", "CONTROL_START_SEC",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

@@ -1,4 +1,5 @@
-"""Drive the seisim closed-loop simulator with a GMP forecast.
+"""Drive the seisim closed-loop simulator with a GMP (or Wiener, Persistence)
+forecast — the GMP_X6/X8 benchmark setting.
 
 This module imports `seisim` and `control`, which are **not** dependencies of
 this package — seisim is unpackaged, so it is only importable when its own
@@ -6,45 +7,51 @@ directory is on `sys.path` (normally because that is the notebook's working
 directory). Import this module only from code that already has seisim
 available; `gmp/__init__.py` deliberately does not.
 
-    cd H:\\seisim-master
-    python H:\\SeisimModels\\examples\\seisim_closed_loop.py --help
-
-The adapter, the plant and the wiring are the ones GMP_X5's exp2 benchmark
-used (`py_exp2/exp2_eval.py`), so numbers produced here are comparable with
-the BLS/ABLS/SR/MS columns in `checkpoints/model_index.csv`.
+The benchmark (GMP_X8_CS `py_exp2/adapters.py`):
+  * seisim untouched: `Seisim.simulate` band-passes the ground itself and
+    hands its predictor the history of `g_filt` — the models' training
+    input — so you pass the *ground* (`prepare(raw)[0]`), not the band.
+  * control starts at 64 s for every predictor: n_history = 64 s, so no
+    actuation before it; the model reads the last `input_window` samples of
+    the history seisim passes.
+  * control horizon = prediction horizon (seamed replay).
+  * scored on the controlled interval [64 s, end) with the shared Welch
+    settings (`gmp.benchmark.welch_kwargs`).
+On a test record this reproduces the BLS column of model_index.csv.
 """
 from __future__ import annotations
 
 import numpy as np
 
-from .predictor import GMP
+from .benchmark import CONTROL_START_SEC, welch_kwargs
 
-# Plant of the X4/X5 benchmark: 1.25 Hz resonance, Q = 1.11 — the same one
-# seisim's own test notebooks build.
+# The seisim notebooks' plant: 1.25 Hz resonance, Q = 1.11.
 WN = 7.85398163397
 Q  = 1.11111111
 
 
 class SeisimGMP:
-    """Adapter: a `GMP` inside seisim's closed-loop controller.
+    """Adapter: a predictor inside seisim's MPCFF controller.
 
     Satisfies seisim's predictor contract — an `n_history` attribute plus a
     `predict(y)` method; `MPCFF.get_actuation` slices `y[-n_history:]` and
     applies `-forecast[:n_control]`. The plant must run at the model's own
-    sampling rate and the control horizon equals the prediction horizon —
-    seamed stitching, i.e. benchmark mode.
+    sampling rate.
     """
-    def __init__(self, gmp: GMP):
-        self.gmp = gmp
-        self.n_history = int(gmp.input_window)
-        self.n_predict = int(gmp.output_window)
+    def __init__(self, model, control_start_sec: float = CONTROL_START_SEC):
+        self.model = model
+        self.n_history = int(round(control_start_sec * model.sampling_rate))
+        self.n_predict = int(model.output_window)
+        if model.input_window > self.n_history:
+            raise ValueError(f"input window {model.input_window} exceeds the "
+                             f"control start {self.n_history}")
 
     def run(self, data_in):
         return self.predict(data_in)
 
     def predict(self, y):
-        x = np.asarray(y, dtype=np.float32)[-self.n_history:].reshape(-1, 1)
-        return self.gmp.predict(x).reshape(-1).astype(np.float64)
+        x = np.asarray(y, dtype=np.float64)[-self.model.input_window:].reshape(-1, 1)
+        return np.asarray(self.model.predict(x), dtype=np.float64).reshape(-1)
 
 
 def make_plant(wn: float = WN, q: float = Q):
@@ -54,14 +61,15 @@ def make_plant(wn: float = WN, q: float = Q):
     return wn ** 2 / (s ** 2 + wn / q * s + wn ** 2)
 
 
-def run_closed_loop(gmp: GMP, ground, tf_sys=None) -> dict:
-    """Simulate feedforward isolation driven by `gmp` and score it.
+def run_closed_loop(model, ground, control_start_sec: float = CONTROL_START_SEC,
+                    tf_sys=None) -> dict:
+    """Simulate feedforward isolation driven by `model` and score it.
 
-    ground : 1-D ground motion already at `gmp.sampling_rate` (use
-             `gmp.prepare`), in the same units/scale as the training data.
+    ground : 1-D ground motion at `model.sampling_rate`, mean removed
+             (`gmp.prepare(raw)[0]`), in the training data's units.
 
-    Returns the seisim benchmark metrics (BLS, ABLS, SR, MS, rms_ground,
-    rms_platform).
+    Returns seisim's benchmark metrics on [control start, end): BLS, ABLS,
+    SR, MS, rms_ground, rms_platform.
     """
     from seisim.benchmark  import Benchmark
     from seisim.controller import MPCFF
@@ -69,19 +77,20 @@ def run_closed_loop(gmp: GMP, ground, tf_sys=None) -> dict:
     from seisim.system     import System
 
     ground = np.asarray(ground, dtype=np.float64).ravel()
-    dt = 1.0 / float(gmp.sampling_rate)
-    t = np.arange(len(ground)) * dt
-
-    pred = SeisimGMP(gmp)
+    fs = float(model.sampling_rate)
+    t = np.arange(len(ground)) / fs
+    pred = SeisimGMP(model, control_start_sec)
     ctrl = MPCFF(model=None, n_predict=pred.n_predict,
                  n_control=pred.n_predict, predictor=pred)
-    sim = Seisim(system=System(tf_sys if tf_sys is not None else make_plant(), dt),
+    sim = Seisim(system=System(tf_sys if tf_sys is not None else make_plant(), 1.0 / fs),
                  controller=ctrl)
-    platform = sim.simulate(t, ground)
-    bench = Benchmark(t, ground, platform).run()
-    return {"BLS":  bench["band_limited_suppression"],
-            "ABLS": bench["auto_band_limited_suppression"],
-            "SR":   bench["suppression_ratio"],
-            "MS":   bench["maximum_suppression"],
-            "rms_ground":   bench["rms_ground"],
-            "rms_platform": bench["rms_platform"]}
+    motion = sim.simulate(t, ground)
+    i0 = pred.n_history
+    g, u = ground[i0:], motion[i0:]
+    b = Benchmark(t[i0:], g, u).run(**welch_kwargs(len(g), fs))
+    return {"BLS":  b["band_limited_suppression"],
+            "ABLS": b["auto_band_limited_suppression"],
+            "SR":   b["suppression_ratio"],
+            "MS":   b["maximum_suppression"],
+            "rms_ground":   b["rms_ground"],
+            "rms_platform": b["rms_platform"]}

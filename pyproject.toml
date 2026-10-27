@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seisim-models"
-version = "1.0.0"
-description = "Pretrained ground-motion predictors (GMP_X5) with zero-config inference for seismic-isolation feedforward control"
+version = "2.0.0"
+description = "Pretrained ground-motion predictors (GMP_X6/X8) with zero-config inference for seismic-isolation feedforward control"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.4",     # not inherited from anything here — see README (CPU vs CUDA)
     "numpy>=2.0",
-    "scipy>=1.13",    # gmp.preprocess only
+    "scipy>=1.13",    # gmp.preprocess, gmp.benchmark
 ]
 
 [project.optional-dependencies]

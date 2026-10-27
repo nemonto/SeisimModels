@@ -1,20 +1,21 @@
 # SeisimModels
 
 Pretrained ground-motion predictors for seismic-isolation feedforward control,
-packaged for inference. 107 checkpoints exported from the GMP_X5 exp2
-benchmark, plus the self-contained `gmp` package that loads and runs them, plus
-an adapter that drives the [seisim](../seisim-master) closed-loop simulator.
+packaged for inference: the 60 deep-model checkpoints of the GMP_X6/X8
+benchmark (the CS paper), its classical baselines, and an adapter that drives
+the [seisim](../seisim-master) closed-loop simulator exactly as the benchmark
+does.
 
-No training code, no datasets, no hyperparameter search — that all lives in
-`GMP_X5`. This is the hand-off: copy the folder, install an env, predict.
+No training code, no datasets, no hyperparameter search — that lives in
+GMP_X6 / GMP_X8_CS. This is the hand-off: copy the folder, install an env,
+predict. The earlier GMP_X5 / X3 release is git tag `v1.0-x5`.
 
 ```python
 from gmp import GMP, find, prepare
 
-ckpt  = find("gru", sub_type="all", output_sec=0.5, target="absolute")
-model = GMP(ckpt)
-sig   = prepare(raw_512hz, ckpt)          # bandpass 0.06-0.6 Hz + 512 -> 8 Hz
-pred  = model.predict_long(sig)           # (T-K, 1), aligned to sig[K:]
+ground, x = prepare(raw_512hz)                  # 512 -> 8 Hz; x = seisim's g_filt
+model = GMP(find("gru", output_sec=2))          # 2 s ahead, seed 0
+pred  = model.predict_long(x)                   # (T-K, 1), aligned to x[K:]
 ```
 
 ---
@@ -23,27 +24,35 @@ pred  = model.predict_long(sig)           # (T-K, 1), aligned to sig[K:]
 
 | | count | |
 |---|---|---|
-| GMP_X5 models | 100 | 5 families x 5 training conditions x 2 horizons x 2 target modes |
-| Legacy GMP_X3 models | 5 | LSTM, GRU, DLinear, PatchTST, CNN-LSTM — 16 Hz, 0.5 s horizon |
-| Persistence baselines | 2 | one per horizon; the floor any model must beat |
+| Deep models | 60 | 5 families x 4 horizons (0.5, 1, 2, 4 s) x 3 training seeds |
+| Wiener filter | 2 fit files | 5 s and 20 s input, every horizon in each file |
+| Persistence | code | last sample held |
+| `checkpoints/model_index.csv` | 416 rows | the benchmark's test scores of every method (below) |
 
-Families: `dlinear`, `gru`, `lstm`, `moderntcn`, `patch-tst`. Everything is
-single-channel, trained on 0.06-0.6 Hz bandpassed vertical ground motion at
-8 Hz. ~51 MB of checkpoints in total.
+Families and their input length (picked by the X6 hyperparameter search):
+`dlinear`, `gru`, `lstm` 2.5 s; `moderntcn`, `patch-tst` 10 s. Every model is
+single-channel, 8 Hz, trained on the pooled data of all four conditions
+(summer, winter, earthquake that broke lock, earthquake that held lock),
+absolute target. ~64 MB of checkpoints.
 
 ```
 SeisimModels/
   gmp/                       the package  (import gmp)
     predictor.py             the GMP class — load, predict, stitch
-    _models.py  _blocks.py   architectures (ports of GMP_X5 py_models/)
-    legacy.py                GMP_X3 schema + architectures, load_gmp()
-    preprocess.py            bandpass / decimate, straight from the training code
+    _models.py  _blocks.py   architectures
+    classical.py             Wiener, Persistence (same interface as GMP)
+    preprocess.py            the signal path: decimate, band (seisim's g_filt)
+    benchmark.py             the benchmark's forecast stream and RMSP
     paths.py                 checkpoint discovery, find()
     seisim_adapter.py        SeisimGMP, make_plant, run_closed_loop
-  checkpoints/               107 x unified_checkpoint.ckpt + model_index.csv
+  checkpoints/               60 x unified_checkpoint.ckpt, classical/, model_index.csv
   examples/                  quickstart, preprocess_demo, seisim_closed_loop
-  tests/test_predictor.py    smoke test over every shipped checkpoint
+  tests/test_predictor.py    checks every shipped model
 ```
+
+`gmp/predictor.py`, `_models.py`, `_blocks.py`, the checkpoints and the index
+are written by GMP_X8_CS `py_exp2/export_seisim_models.py`; don't edit them
+here.
 
 ---
 
@@ -57,7 +66,7 @@ package, so a non-editable install leaves them behind (override with
 ### conda
 
 ```bash
-cd H:/SeisimModels
+cd G:/SeisimModels
 conda env create -f environment.yml
 conda activate seisim-models
 ```
@@ -65,7 +74,7 @@ conda activate seisim-models
 ### uv
 
 ```bash
-cd H:/SeisimModels
+cd G:/SeisimModels
 uv sync --extra seisim
 uv run python examples/quickstart.py
 ```
@@ -73,7 +82,7 @@ uv run python examples/quickstart.py
 ### plain pip
 
 ```bash
-cd H:/SeisimModels
+cd G:/SeisimModels
 python -m venv .venv
 .venv/Scripts/activate            # Windows;  source .venv/bin/activate elsewhere
 pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -82,168 +91,159 @@ pip install -e ".[seisim,index]"
 
 ### About torch
 
-CPU is plenty — the biggest checkpoint is 1.9 MB and `predict_long` batches
+CPU is plenty — the largest checkpoint is a few MB and `predict_long` batches
 windows internally. CUDA wheels are **not** on PyPI: for a GPU box install
 torch first from `--index-url https://download.pytorch.org/whl/cu129`, then
 `pip install -e .`. `GMP` picks CUDA automatically when it is available;
-pass `device="cpu"` to override.
+pass `device="cpu"` to override. Inference always runs in full float32 with
+TF32 off (restored afterwards), so CPU and GPU give the same forecasts: the
+cuDNN TF32 default can move a forecast by several percent.
 
 ### Check the install
 
 ```bash
-python tests/test_predictor.py        # walks all 107 checkpoints
+python tests/test_predictor.py        # every checkpoint + Wiener/Persistence at every horizon
 ```
 
-Last line should read `107 checkpoints, 0 failures`. A few minutes on CPU.
+The last line should read `72 models, 0 failures`.
 
 ---
 
 ## Quickstart
 
 ```python
-from gmp import GMP, load_gmp, find
+from gmp import GMP, Wiener, Persistence, find
 
-ckpt = find("gru", sub_type="all", output_sec=0.5, target="absolute")
-# -> checkpoints/gru/all/w5x0.5_absolute/unified_checkpoint.ckpt
-gmp = GMP(ckpt)                    # or load_gmp(ckpt) — see "Legacy models"
+model = GMP(find("gru", output_sec=2, seed=0))
+# -> checkpoints/gru/w2.5x2_s0/unified_checkpoint.ckpt
+model.model_type      # 'gru'
+model.input_window    # 20 samples = 2.5 s at 8 Hz   (K)
+model.output_window   # 16 samples = 2 s at 8 Hz     (H)
+model.sampling_rate   # 8
 
-gmp.model_type      # 'gru'
-gmp.input_window    # 40 samples  = 5 s at 8 Hz      (K)
-gmp.output_window   # 4 samples   = 0.5 s at 8 Hz    (H)
-gmp.sampling_rate   # 8
-gmp.target_mode     # 'absolute'
+y  = model.predict(x)                        # (K, C) -> (H, C);  (B, K, C) -> (B, H, C)
+yl = model.predict_long(sig, mode="seamed")  # (T,) or (T, C) -> (T-K, C), aligned to sig[K:]
 
-y  = gmp.predict(x)                        # (K, C) -> (H, C);  (B, K, C) -> (B, H, C)
-yl = gmp.predict_long(sig, mode="seamed")  # (T, C), T >= K+H -> (T-K, C)
+wiener = Wiener(find("wiener", input_sec=20), output_sec=2)   # same interface
+persist = Persistence(output_sec=2)
 ```
 
 Everything needed for inference lives inside the checkpoint, so construction
-takes only a path — no config, no model class, no window arguments.
-
-- `predict` needs the trailing axis pair `(K, C)` and **rejects bare 1-D**.
-- `predict_long` promotes `(T,)` to `(T, 1)` and returns a forecast aligned to
-  `signal[K:]` — element *i* of the output is the model's forecast of
-  `signal[K+i]`.
-- **Delta checkpoints are integrated internally.** `target_mode` describes how
-  the model was trained; the return value is always an absolute-signal forecast
-  in the original units. To a caller, `absolute` and `delta` differ only in
-  accuracy.
+takes only a path. `predict` needs the trailing axis pair `(K, C)`;
+`predict_long` promotes `(T,)` to `(T, 1)`, and element *i* of its output is
+the forecast of `signal[K+i]`.
 
 ### Stitching modes
 
 | mode | stride | what it does |
 |---|---|---|
-| `seamed` (default) | H | hard concatenation; each output sample comes from exactly one forecast. Broadband seam noise above the signal band. |
+| `seamed` (default) | H | hard concatenation; each output sample comes from exactly one forecast — what seisim does. Broadband seam noise above the signal band. |
 | `overlap_add` | H/2 | Hann cross-fade between overlapping forecasts. Smoother, but averaging two imperfectly-phased forecasts shrinks passband amplitude. |
 
-Use `seamed` for anything that drives control. GMP_X4 measured `overlap_add`
-scoring *better* open-loop (RMSE) and markedly *worse* closed-loop (BLS, ABLS,
-SR, MS).
+Use `seamed` for anything that drives control.
 
 ---
 
 ## Preprocessing: what the models expect
 
-**`GMP` does no filtering, decimation or resampling.** Its `sampling_rate` is
-metadata. Every model was trained on ground motion that was:
+**`GMP` does no filtering, decimation or resampling.** Every model was trained
+on the signal seisim hands its predictor:
 
-1. zero-phase Butterworth bandpassed **0.06-0.6 Hz**, 4th order (`sosfiltfilt`), then
-2. decimated by polyphase FIR to **8 Hz** (16 Hz for the legacy models) from a
-   512 Hz raw recording.
-
-Each checkpoint carries its own recipe, so you never hardcode those numbers:
+1. **ground** — the raw 512 Hz velocity decimated to 8 Hz with
+   `scipy.signal.decimate` in q = 8 steps (zero-phase IIR, as the seisim
+   notebooks do), mean removed. This is what you pass to `Seisim.simulate`.
+2. **input** — seisim's prediction band applied to the ground: 4th-order
+   Butterworth 0.05-0.5 Hz, zero-phase (`sosfiltfilt`). Bit-identical to the
+   `g_filt` that `Seisim.simulate` computes internally.
 
 ```python
-from gmp import recipe, prepare
+from gmp import prepare, recipe
 
-recipe(ckpt)                 # {'fs_in': 512, 'fs_out': 8, 'low': 0.06, 'high': 0.6, 'order': 4}
-sig = prepare(raw, ckpt)                 # raw is 512 Hz
-sig = prepare(raw64, ckpt, fs_in=64)     # a 64 Hz record instead
+ground, x = prepare(raw)                 # raw at 512 Hz
+ground, x = prepare(raw64, fs_in=64)     # a 64 Hz record instead
+recipe(find("gru"))  # {'fs_in': 512, 'fs': 8, 'protocol': 'zero_phase', 'low': 0.05, 'high': 0.5, 'order': 4}
 ```
 
-`prepare` returns `(T, 1)` float32 at the model's rate. `fs_in / fs_out` must
-be a whole number; resample first if it isn't. Very short records will trip
-`sosfiltfilt`'s padding requirement (roughly `3*(2*order+1)` samples of margin)
-— give it at least a few minutes of data.
-
-The lower-level `bandpass`, `decimate_to` and `bandpass_decimate` are exported
-too; they are lifted verbatim from the GMP_X5 training code so there is one
-recipe, not two.
+`fs_in / 8` must be a whole number. Give it at least a few minutes of data
+(`sosfiltfilt` padding). The input is the **zero-phase** (noncausal) band, as
+in seisim: an offline setting. A real-time causal filter would give every
+predictor a harder input.
 
 ### Units and scale
 
-The z-score scaler is baked into each checkpoint. Your data must be in the
-same physical units and on the same scale as the training data, or the forecast
-degrades **without raising anything**. The `rms_ground` column of
-`checkpoints/model_index.csv` is the reference: roughly 180 for the summer
-split, up to ~4800 for winter. If your record's RMS is orders of magnitude off
-that, rescale it before predicting.
+The scaler is baked into each checkpoint. Your data must be ground velocity
+in **nm/s**, like the training data, or the forecast degrades **without
+raising anything**. The `rms_ground` column of `model_index.csv` is the
+reference (per condition, at 8 Hz after decimation).
 
 ---
 
-## Choosing a checkpoint
+## Choosing a model
 
 ```
-checkpoints/<family>/<sub_type>/w<input_sec>x<output_sec>_<target>/unified_checkpoint.ckpt
-checkpoints/naive/w5x<output_sec>_absolute/unified_checkpoint.ckpt
-checkpoints/legacy/<family>/unified_checkpoint.ckpt
+checkpoints/<family>/w<input_sec>x<output_sec>_s<seed>/unified_checkpoint.ckpt
+checkpoints/classical/wiener_w<input_sec>.npz
 ```
-
-| axis | values | meaning |
-|---|---|---|
-| family | `dlinear` `gru` `lstm` `moderntcn` `patch-tst` | architecture |
-| sub_type | `summer` `winter` `eql` `eqh` `all` | **training** data: Aug 2024 days / Jan 2024 days / earthquakes that broke lock / earthquakes that held lock / the union of all four |
-| window | `w5x0.5` `w5x1` | 5 s of input, 0.5 s or 1 s of forecast |
-| target | `absolute` `delta` | training target; output is absolute either way |
-
-`find()` builds these paths for you:
 
 ```python
-find("patch-tst", sub_type="winter", output_sec=1.0, target="delta")
-find("naive", output_sec=0.5)                   # persistence baseline
-find("cnn-lstm", sub_type="legacy")             # GMP_X3
+find("patch-tst", output_sec=1, seed=2)
+find("wiener", input_sec=5)
 ```
+
+### Results (the benchmark's test set)
+
+Macro RMSP (lower is better; per condition the mean over its test files,
+then the mean over the four conditions), mean over the 3 seeds, in seisim's
+closed loop with control from 64 s:
+
+| Method | 0.5 s | 1 s | 2 s | 4 s |
+|---|---|---|---|---|
+| GRU | 0.00118 | 0.0119 | 0.144 | 0.434 |
+| LSTM | 0.00200 | 0.0150 | 0.156 | 0.456 |
+| PatchTST | 0.00926 | 0.0531 | 0.237 | 0.490 |
+| ModernTCN | 0.00910 | 0.0523 | 0.239 | 0.476 |
+| DLinear | 0.0241 | 0.139 | 0.487 | 0.818 |
+| Wiener (20 s) | 0.0138 | 0.0740 | 0.341 | 0.650 |
+| Wiener (5 s) | 0.0146 | 0.0799 | 0.392 | 0.720 |
+| ConstantOrder (o7, seisim) | 0.00149 | 0.0749 | 4.41 | 390 |
+| Persistence | 0.463 | 0.779 | 1.30 | 1.23 |
+| No actuation | 1 | 1 | 1 | 1 |
+
+These are exploratory: the test files informed the models' development.
 
 ### The model index
 
-`checkpoints/model_index.csv` — 428 rows, one per (checkpoint, test
-condition), straight from the exp2 benchmark:
+`checkpoints/model_index.csv` — one row per (method, condition): the 60
+checkpoints, Wiener 5/20 s, persistence, ConstantOrder o2-o7, no actuation
+(`zero`) and the filtered-target reference (`oracle`), at every horizon:
 
-`model_type, sub_type, window, target, testset_id, RMSE, RMSP, BLS, ABLS, SR,
-MS, rms_ground, rms_platform, fs, n_segments, ckpt_path`
+`model_type, variant, window, seed, testset_id, RMSE, RMSP, BLS, ABLS, SR,
+MS, rms_ground, rms_platform, n_segments, path`
 
-`RMSE`/`RMSP` are open-loop; `BLS`/`ABLS`/`SR`/`MS` are closed-loop
-suppression (higher is better). `ckpt_path` is POSIX-relative to this project.
+`window` is `"<input s>:<output s>"`; `seed` is -1 for deterministic methods;
+`RMSE`/`RMSP` are open-loop, `BLS`/`ABLS`/`SR`/`MS` closed-loop suppression
+(higher is better), all on the controlled interval; `path` is the shipped
+file, relative to this project (`-` when nothing is shipped).
 
 ```python
 import pandas as pd
-from gmp import INDEX_CSV, ROOT, load_gmp
+from gmp import INDEX_CSV, GMP, resolve
 
 idx = pd.read_csv(INDEX_CSV)
-best = (idx[idx.testset_id == "winter"]
-        .sort_values("BLS", ascending=False)
-        .head(5)[["model_type", "sub_type", "window", "target", "BLS", "ckpt_path"]])
-print(best)
-
-gmp = load_gmp(ROOT / best.iloc[0].ckpt_path)
+win = idx[(idx.testset_id == "winter") & idx.window.str.endswith(":2")]
+print(win.sort_values("BLS", ascending=False).head(5)[["model_type", "seed", "RMSP", "BLS", "path"]])
 ```
 
-### Legacy models
+### Reproducing a score
 
-The five checkpoints under `checkpoints/legacy/` come from GMP_X3: 16 Hz,
-0.5 s horizon, absolute only, and an older checkpoint schema that bare `GMP`
-cannot read. Use `load_gmp`, which sniffs the schema and returns `GMP` or
-`LegacyGMP` — identical interface either way.
+`gmp.benchmark` replays the benchmark's grid: the first forecast at the
+control start (64 s), then every H samples.
 
 ```python
-from gmp import load_gmp
-gmp = load_gmp("checkpoints/legacy/patch-tst/unified_checkpoint.ckpt")
-gmp.sampling_rate    # 16
-gmp.input_window     # 720 = 45 s
+from gmp import CONTROL_START_SEC, forecast_stream, rmsp
+stream = forecast_stream(model, x)                # aligned to x[512:]
+rmsp(stream, x[int(CONTROL_START_SEC * 8):], 8)
 ```
-
-`load_gmp` works for every shipped checkpoint, so prefer it whenever the path
-is data rather than a literal.
 
 ---
 
@@ -252,68 +252,46 @@ is data rather than a literal.
 seisim's predictor contract is small: an `n_history` attribute and a
 `predict(y)` method. `MPCFF.get_actuation` slices `seismic[-n_history:]`, calls
 the predictor, and applies `-forecast[:n_control]`. `gmp.seisim_adapter`
-implements it.
+implements it the way the benchmark does: `n_history` = 64 s (no actuation
+before the control start), the model reads the last `input_window` samples,
+control horizon = prediction horizon.
 
-Two ways to reach this package from a seisim notebook (its kernel starts in
-`H:\seisim-master`):
+**Pass seisim the ground, not the band.** `Seisim.simulate` band-passes the
+ground itself and hands the predictor `g_filt`, the models' training input.
 
 ```python
-# A — installed (preferred): nothing to do, just import
-from gmp import find, load_gmp, prepare
-
-# B — not installed: SeisimModels is a sibling of seisim-master
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path.cwd().parent / "SeisimModels"))
-from gmp import find, load_gmp, prepare
-```
+sys.path.insert(0, str(Path.cwd().parent / "SeisimModels"))   # if not installed
 
-Then swap `ConstantOrder` for the GMP adapter — this is the existing
-`test_seisim.ipynb` cell with three lines changed:
-
-```python
 import numpy as np
-from seisim.benchmark  import Benchmark
-from seisim.controller import MPCFF
-from seisim.seisim     import Seisim
-from seisim.system     import System
-from gmp import find, load_gmp, prepare
-from gmp.seisim_adapter import SeisimGMP, make_plant
+from gmp import GMP, find, prepare
+from gmp.seisim_adapter import run_closed_loop
 
-ckpt = find("gru", sub_type="all", output_sec=0.5, target="absolute")
-gmp  = load_gmp(ckpt)
-
+model = GMP(find("gru", output_sec=2))
 t64, g64 = np.loadtxt("test_data/itmx_z_1441947618_64hz.txt")
-ground = prepare(g64, ckpt, fs_in=64).ravel()       # 64 Hz -> 8 Hz, 0.06-0.6 Hz
-dt = 1.0 / gmp.sampling_rate
-t  = np.arange(len(ground)) * dt
-
-pred = SeisimGMP(gmp)
-ctrl = MPCFF(model=None, n_predict=pred.n_predict,
-             n_control=pred.n_predict, predictor=pred)
-sim  = Seisim(system=System(make_plant(), dt), controller=ctrl)
-platform = sim.simulate(t, ground)
-print(Benchmark(t, ground, platform).run())
+ground, _ = prepare(g64, fs_in=64)
+print(run_closed_loop(model, ground))     # BLS, ABLS, SR, MS on [64 s, end)
 ```
 
-Or in one call: `gmp.seisim_adapter.run_closed_loop(gmp, ground)`.
+Or build it yourself with `SeisimGMP(model)`, `MPCFF(model=None,
+n_predict=H, n_control=H, predictor=...)` and `System(make_plant(), 1/8)`.
 
-Three things that will bite you:
+Things that will bite you:
 
-- **The plant must run at the model's rate.** `dt = 1/gmp.sampling_rate`, i.e.
-  0.125 s for X5 models and 0.0625 s for legacy. seisim's own notebooks run at
-  64 Hz; resample the ground motion (that is what `prepare` is for) rather
-  than changing `dt`.
+- **The plant must run at the model's rate**: `dt = 1/8` s. seisim's own
+  notebooks run at 64 Hz; decimate the ground (`prepare`) rather than
+  changing `dt`.
 - **`test_seisim.ipynb` rebinds the module name** in its last cell
   (`seisim = seisim.seisim.Seisim(...)`), after which `seisim.predictor` no
   longer resolves. Do your imports before that cell, or use
   `from seisim.seisim import Seisim`.
 - **`seisim.predictor` is not this package.** It is seisim's own polynomial
-  extrapolator (`ConstantOrder`). This package is top-level `gmp` precisely so
-  the two never collide.
+  extrapolator (`ConstantOrder`, the paper's third baseline). This package
+  is top-level `gmp` so the two never collide.
 
 `make_plant()` is the benchmark plant — 1.25 Hz resonance, Q = 1.11 — the same
 transfer function seisim's own test notebooks build.
 
 Runnable version: `examples/seisim_closed_loop.py`, run with cwd =
-`H:\seisim-master` so `import seisim` resolves.
+`G:\seisim-master` so `import seisim` resolves.

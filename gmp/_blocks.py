@@ -1,11 +1,7 @@
-"""Building blocks for `_models.py`.
+"""Building blocks for `predictor/_models.py` — predictor-side port.
 
-This file is paired with `_models.py` and runs standalone on `torch` alone.
-No project-internal imports are allowed here.
-
-Ported from `GMP_X5/predictor/_blocks.py` with the WPMixer wavelet blocks
-removed (nothing shipped here uses them), which drops the PyWavelets and
-numpy dependencies.
+Verbatim mirror of `py_models/model_blocks.py` so the predictor package runs
+standalone with `torch` only. Keep the two files in sync.
 
 Contents
 --------
@@ -20,7 +16,6 @@ PatchTST blocks (ported from Time-Series-Library)
 
 ModernTCN block (compact single-stage variant of Luo & Wang, ICLR 2024)
     _ModernTCNBlock
-
 """
 from __future__ import annotations
 
@@ -245,8 +240,7 @@ class FlattenHead(nn.Module):
 class _ModernTCNBlock(nn.Module):
     """Depthwise temporal mixing + pointwise ConvFFN with BatchNorm and residuals.
 
-    Input/output shape: (B, dim, L). The reference repo's FFN2 (grouped by
-    dmodel) is degenerate at nvars=1 and is omitted.
+    Input/output shape: (B, dim, L).
     """
     def __init__(self, dim: int, kernel_size: int, ffn_ratio: int = 1,
                  dropout: float = 0.0):

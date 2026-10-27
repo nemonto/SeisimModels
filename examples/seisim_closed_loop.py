@@ -2,14 +2,14 @@
 
 Run it from the seisim checkout, so `import seisim` resolves:
 
-    cd H:\\seisim-master
-    python H:\\SeisimModels\\examples\\seisim_closed_loop.py \\
-        --data test_data/itmx_z_1441947618_64hz.txt --model gru --sub-type all
+    cd G:\\seisim-master
+    python G:\\SeisimModels\\examples\\seisim_closed_loop.py \\
+        --data test_data/itmx_z_1441947618_64hz.txt --model gru --output-sec 2
 
-Prints the benchmark metrics: BLS / ABLS / SR / MS plus the ground and
-platform RMS. Same plant, controller and stitching as the GMP_X5 exp2
-benchmark, so the numbers are comparable with `checkpoints/model_index.csv`
-(not equal — that record and these units differ).
+Prints seisim's benchmark metrics on the controlled interval (from 64 s):
+BLS / ABLS / SR / MS plus the ground and platform RMS. Same plant,
+controller, control start and scoring as the GMP_X6/X8 benchmark, so on a
+test record the numbers are the BLS column of `checkpoints/model_index.csv`.
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gmp import find, load_gmp, prepare                    # noqa: E402
-from gmp.seisim_adapter import make_plant, run_closed_loop  # noqa: E402
+from gmp import FAMILIES, GMP, Persistence, Wiener, find, prepare   # noqa: E402
+from gmp.seisim_adapter import run_closed_loop                       # noqa: E402
 
 
 def main() -> None:
@@ -29,28 +29,28 @@ def main() -> None:
     p.add_argument("--data", required=True, type=Path,
                    help="two-row ASCII ground motion (time row, amplitude row)")
     p.add_argument("--fs-in", type=float, default=None)
-    p.add_argument("--model", default="gru")
-    p.add_argument("--sub-type", default="all")
-    p.add_argument("--output-sec", type=float, default=0.5, choices=[0.5, 1.0])
-    p.add_argument("--target", default="absolute", choices=["absolute", "delta"])
-    p.add_argument("--ckpt", type=Path, default=None,
-                   help="explicit checkpoint path (overrides the selectors)")
+    p.add_argument("--model", default="gru",
+                   choices=list(FAMILIES) + ["wiener", "persistence"])
+    p.add_argument("--output-sec", type=float, default=2.0, choices=[0.5, 1.0, 2.0, 4.0])
+    p.add_argument("--seed", type=int, default=0, choices=[0, 1, 2])
     args = p.parse_args()
 
-    ckpt = args.ckpt if args.ckpt else find(
-        args.model, sub_type=args.sub_type,
-        output_sec=args.output_sec, target=args.target)
-    gmp = load_gmp(ckpt)
-    print(f"model  : {gmp.model_type}  K={gmp.input_window} H={gmp.output_window} "
-          f"fs={gmp.sampling_rate} Hz  target={gmp.target_mode}")
+    if args.model == "wiener":
+        model = Wiener(find("wiener", input_sec=20), args.output_sec)
+    elif args.model == "persistence":
+        model = Persistence(args.output_sec)
+    else:
+        model = GMP(find(args.model, output_sec=args.output_sec, seed=args.seed))
+    print(f"model  : {model.model_type}  K={model.input_window} H={model.output_window} "
+          f"fs={model.sampling_rate} Hz")
 
     t, raw = np.loadtxt(args.data)
     fs_in = int(args.fs_in if args.fs_in else round(1.0 / (t[1] - t[0])))
-    ground = prepare(raw, ckpt, fs_in=fs_in).ravel()
-    print(f"ground : {len(ground)} samples at {gmp.sampling_rate} Hz "
-          f"(from {fs_in} Hz), rms = {np.sqrt((ground ** 2).mean()):.4g}")
+    ground, _ = prepare(raw, fs_in=fs_in)
+    print(f"ground : {len(ground)} samples at 8 Hz (from {fs_in} Hz), "
+          f"rms = {np.sqrt((ground ** 2).mean()):.4g}")
 
-    metrics = run_closed_loop(gmp, ground, tf_sys=make_plant())
+    metrics = run_closed_loop(model, ground)
     print()
     for k, v in metrics.items():
         print(f"  {k:<13s} {v:.6g}")

@@ -1,11 +1,12 @@
-"""Raw recording -> model input -> forecast, on a real record.
+"""Raw recording -> model input -> forecast -> RMSP, on a real record.
 
 Uses seisim's own 1 h test file (64 Hz, two ASCII rows: time, amplitude):
 
-    python examples/preprocess_demo.py --data H:/seisim-master/test_data/itmx_z_1441947618_64hz.txt
+    python examples/preprocess_demo.py --data G:/seisim-master/test_data/itmx_z_1441947618_64hz.txt
 
-Any (T,) or (T, C) array works — pass its rate with --fs-in. The bandpass and
-the decimation factor come from the checkpoint itself, not from this script.
+Any 1-D record works — pass its rate with --fs-in. The models were trained
+on LIGO ground velocity in nm/s (see README, "Units and scale"); a record in
+other units gives a poor forecast without raising anything.
 """
 from __future__ import annotations
 
@@ -16,7 +17,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gmp import find, load_gmp, prepare, recipe        # noqa: E402
+from gmp import (CONTROL_START_SEC, GMP, Persistence, Wiener, find,   # noqa: E402
+                 forecast_stream, prepare, recipe, rmsp)
 
 
 def main() -> None:
@@ -25,34 +27,28 @@ def main() -> None:
                    help="two-row ASCII file (time row, amplitude row)")
     p.add_argument("--fs-in", type=float, default=None,
                    help="sample rate of --data (default: inferred from the time row)")
-    p.add_argument("--model", default="gru")
-    p.add_argument("--sub-type", default="all")
-    p.add_argument("--output-sec", type=float, default=0.5, choices=[0.5, 1.0])
+    p.add_argument("--output-sec", type=float, default=2.0, choices=[0.5, 1.0, 2.0, 4.0])
     args = p.parse_args()
 
     t, raw = np.loadtxt(args.data)
-    fs_in = args.fs_in if args.fs_in else round(1.0 / (t[1] - t[0]))
-    print(f"raw       : {raw.shape[0]} samples at {fs_in:g} Hz "
-          f"= {raw.shape[0] / fs_in:g} s,  rms = {np.sqrt((raw ** 2).mean()):.4g}")
+    fs_in = int(args.fs_in if args.fs_in else round(1.0 / (t[1] - t[0])))
+    print(f"raw      : {len(raw)} samples at {fs_in} Hz = {len(raw) / fs_in:g} s, "
+          f"rms = {np.sqrt((raw ** 2).mean()):.4g}")
+    print(f"recipe   : {recipe(find('gru', output_sec=args.output_sec))}")
 
-    ckpt = find(args.model, sub_type=args.sub_type, output_sec=args.output_sec)
-    print(f"recipe    : {recipe(ckpt)}")
+    ground, x = prepare(raw, fs_in=fs_in)
+    print(f"prepared : ground and input, {len(x)} samples at 8 Hz, "
+          f"input rms = {np.sqrt((x ** 2).mean()):.4g}")
 
-    sig = prepare(raw, ckpt, fs_in=int(fs_in))
-    gmp = load_gmp(ckpt)
-    print(f"prepared  : {sig.shape} at {gmp.sampling_rate} Hz,  "
-          f"rms = {np.sqrt((sig ** 2).mean()):.4g}")
-
-    pred = gmp.predict_long(sig, mode="seamed")
-    target = sig[gmp.input_window:]
-    rmse = float(np.sqrt(((pred - target) ** 2).mean()))
-    rms_t = float(np.sqrt((target ** 2).mean()))
-    print(f"forecast  : {pred.shape}, aligned to prepared[{gmp.input_window}:]")
-    print(f"open-loop : RMSE = {rmse:.4g}   (target RMS = {rms_t:.4g}, "
-          f"ratio = {rmse / rms_t:.3f})")
-    print("\nA ratio near or above 1 usually means the record is scaled "
-          "differently from the training data — the checkpoint's scaler is "
-          "fixed, so units matter (see README, 'Units and scale').")
+    i0 = int(CONTROL_START_SEC * 8)
+    models = {fam: GMP(find(fam, output_sec=args.output_sec))
+              for fam in ("gru", "lstm", "moderntcn", "patch-tst", "dlinear")}
+    models["wiener-20s"] = Wiener(find("wiener", input_sec=20), args.output_sec)
+    models["persistence"] = Persistence(args.output_sec)
+    print(f"\nRMSP at {args.output_sec:g} s ahead, scored from {CONTROL_START_SEC:g} s "
+          "(lower is better; 1 = no better than predicting zero):")
+    for name, m in models.items():
+        print(f"  {name:<12s} {rmsp(forecast_stream(m, x), x[i0:], 8):.4g}")
 
 
 if __name__ == "__main__":
